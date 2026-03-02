@@ -3,7 +3,6 @@ from abc import ABC, abstractmethod
 from concurrent.futures.thread import ThreadPoolExecutor
 from typing import List
 import submitit
-from attrs import frozen
 from pathlib import Path
 
 from .Task import Task
@@ -109,6 +108,7 @@ DEFAULT_PARAMS = {
 
 
 class SubmitItExecutor(AbstractTaskExecutor):
+    # TODO: Query the cluster for the maximum number of jobs allowed per user and set it as max_jobs_queued
 
     def __init__(self, folder: Path = None, internal_executor=None, parameters=None, max_jobs_pending: int = 45, max_jobs_queued: int = 20):
         super().__init__(max_jobs_pending=max_jobs_pending, max_jobs_queued=max_jobs_queued)

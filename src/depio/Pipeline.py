@@ -207,7 +207,8 @@ class Pipeline:
             self._old_terminal_settings = termios.tcgetattr(sys.stdin)
             tty.setcbreak(sys.stdin.fileno())
             restore_terminal = True
-        except (ImportError, OSError, AttributeError):
+        except Exception:
+            # termios.error is not a subclass of OSError, so we catch broadly
             restore_terminal = False
             if not self.QUIET:
                 print("Note: Interactive commands not available on this system")
