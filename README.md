@@ -10,7 +10,7 @@
 # depio
 ![python-package.yml](https://github.com/noppelmax/depio/actions/workflows/python-package.yml/badge.svg)
 
-A simple task manager with slurm integration.
+A Python task pipeline manager with DAG-based dependency resolution and an interactive TUI. Supports local parallel execution and SLURM/HPC clusters via `submitit`.
 
 ## How to use
 We start with setting up a **Pipeline**:
@@ -21,7 +21,7 @@ from depio.Executors import ParallelExecutor
 defaultpipeline = Pipeline(depioExecutor=ParallelExecutor())
 ```
 To this pipeline object you can now add **Task**s.
-There are two ways how you can add tasks. 
+There are two ways how you can add tasks.
 The first (1) is via decorators and the second (2) is a function interface.
 Before we consider the differences we start with parts that are similar for both.
 
@@ -64,12 +64,11 @@ exit(defaultpipeline.run())
 
 First, we add a folder `build` in which we want to produce our artifacts.
 Then, we create an initial artifact `build/input.txt` via `touch`.
-Thereafter, begins the interesting part: 
-We define a function `slowfunction` that takes a couple of seconds to produce a output file from a given input file.
-We annotate function with the `@task` decorator and use the `typing.Annotated` type to tell depio which arguments are depencendies and which are product of the function.
-depion will parse this for us and setup the dependencies between the tasks.
+Thereafter, begins the interesting part:
+We define a function `slowfunction` that takes a couple of seconds to produce an output file from a given input file.
+We annotate the function with the `@task` decorator and use `typing.Annotated` to tell depio which arguments are dependencies and which are products of the function.
+depio will parse this for us and set up the dependencies between the tasks.
 Finally, we add the function calls to the pipeline via `add_task` and `run` the pipeline.
- 
 
 
 ### (2) Use via the functional interface
@@ -103,22 +102,13 @@ def slowfunction(
         f.write("Hallo from depio")
 
 
-defaultpipeline.add_task(Task("functionaldemo1", slowfunction, [BLD/"input.txt", BLD/"output1.txt", ], { "sec": 2}))
-defaultpipeline.add_task(Task("functionaldemo2", slowfunction, [BLD/"output1.txt", BLD/"final1.txt", ],{ "sec": 1}))
+defaultpipeline.add_task(Task("functionaldemo1", slowfunction, [BLD/"input.txt", BLD/"output1.txt"], {"sec": 2}))
+defaultpipeline.add_task(Task("functionaldemo2", slowfunction, [BLD/"output1.txt", BLD/"final1.txt"], {"sec": 1}))
 
 exit(defaultpipeline.run())
 ```
 
-This will produce the following output:
-```
-Tasks:
-  ID  Name             Slurm ID    Slurm Status    Status       Task Deps.    Path Deps.             Products
-   1  functionaldemo1                              FINISHED     []            ['build/input.txt']    ['build/output1.txt']
-   2  functionaldemo2                              FINISHED     [1]           ['build/output1.txt']  ['build/final1.txt']
-All jobs done! Exit.
-```
-
-The main difference is that you have to pass the args and kwargs manually, but therefore can also overwrite the task name.
+The main difference is that you have to pass the args and kwargs manually, but you can also overwrite the task name.
 However you can also define the DAG by yourself:
 ```python
 import time
@@ -134,37 +124,23 @@ def slowfunction(sec:int = 0):
     time.sleep(sec)
 
 t1 = defaultpipeline.add_task(Task("functionaldemo1", slowfunction, [1]))
-t2 = defaultpipeline.add_task(Task("functionaldemo1", slowfunction, [1]))
-t3 = defaultpipeline.add_task(Task("functionaldemo1", slowfunction, [1]))
-t4 = defaultpipeline.add_task(Task("functionaldemo2", slowfunction, [2], depends_on=[t3]))
-t5 = defaultpipeline.add_task(Task("functionaldemo3", slowfunction, [3], depends_on=[t4]))
+t2 = defaultpipeline.add_task(Task("functionaldemo2", slowfunction, [1]))
+t3 = defaultpipeline.add_task(Task("functionaldemo3", slowfunction, [1]))
+t4 = defaultpipeline.add_task(Task("functionaldemo4", slowfunction, [2], depends_on=[t3]))
+t5 = defaultpipeline.add_task(Task("functionaldemo5", slowfunction, [3], depends_on=[t4]))
 
 exit(defaultpipeline.run())
 ```
 
-This should produce the following output:
-```
-Tasks:
-  ID  Name             Slurm ID    Slurm Status    Status       Task Deps.    Path Deps.    Products
-   1  functionaldemo1                              FINISHED     []            []            []
-   2  functionaldemo2                              FINISHED     [1]           []            []
-   3  functionaldemo3                              FINISHED     [2]           []            []
-All jobs done! Exit.
-```
-
-Notice how it produced only three tasks instead of five.
-The reason is that the first three task are the same function with the same arguments.
-depio is merging these together.
-When using the functional interface as above with hard coded dependencies between the task (`depends_on`), the `add_task` function will return the earliest registered task with the given function and arguments.
-You hence have to save the return value as the task object and relate to this object.
+Notice how depio deduplicates tasks: if the same function is called with identical arguments, `add_task` returns the already-registered instance rather than adding a duplicate.
+When using the functional interface with hard-coded dependencies (`depends_on`), always save the return value of `add_task` and use that object when wiring up downstream tasks.
 
 ## How to use with Slurm
-You just have to replace the pipeline with a slurm pipeline like so:
+You just have to replace the executor with a `SubmitItExecutor` like so:
 ```python
 import os
 from typing import Annotated
 import pathlib
-import submitit
 import time
 
 from depio.Executors import SubmitItExecutor
@@ -178,12 +154,10 @@ BLD.mkdir(exist_ok=True)
 SLURM = pathlib.Path("slurm")
 SLURM.mkdir(exist_ok=True)
 
-
 # Configure the slurm jobs
 os.environ["SBATCH_RESERVATION"] = "<your reservation>"
 defaultpipeline = Pipeline(depioExecutor=SubmitItExecutor(folder=SLURM))
 
-# Use the decorator with args and kwargs
 @task("datapipeline")
 def slowfunction(
             input: Annotated[pathlib.Path, Dependency],
@@ -195,12 +169,14 @@ def slowfunction(
     with open(output,'w') as f:
         f.write("Hallo from depio")
 
-defaultpipeline.add_task(slowfunction(BLD/"input.txt", BLD/"output1.txt",sec=2))
-defaultpipeline.add_task(slowfunction(BLD/"input.txt", BLD/"output2.txt",sec=3))
-defaultpipeline.add_task(slowfunction(BLD/"output1.txt", BLD/"final1.txt",sec=1))
+defaultpipeline.add_task(slowfunction(BLD/"input.txt", BLD/"output1.txt", sec=2))
+defaultpipeline.add_task(slowfunction(BLD/"input.txt", BLD/"output2.txt", sec=3))
+defaultpipeline.add_task(slowfunction(BLD/"output1.txt", BLD/"final1.txt", sec=1))
 
 exit(defaultpipeline.run())
 ```
+
+SLURM executor settings (partition, time limit, memory, GPU count, job queue limits) can be configured in `.depio/config.json` — see the **Configuration** section below.
 
 ## How to use with Hydra
 Here is how you can use it with hydra:
@@ -208,7 +184,6 @@ Here is how you can use it with hydra:
 import os
 from typing import Annotated
 import pathlib
-import submitit
 import time
 
 from omegaconf import DictConfig, OmegaConf
@@ -225,16 +200,14 @@ SLURM.mkdir(exist_ok=True)
 CONFIG = pathlib.Path("config")
 CONFIG.mkdir(exist_ok=True)
 
-# Configure the slurm jobs
 os.environ["SBATCH_RESERVATION"] = "isec-team"
 defaultpipeline = Pipeline(depioExecutor=SubmitItExecutor(folder=SLURM))
 
-# Use the decorator with args and kwargs
 @task("datapipeline")
 def slowfunction(
             input: Annotated[pathlib.Path, Dependency],
             output: Annotated[pathlib.Path, Product],
-            cfg: Annotated[DictConfig,IgnoredForEq],
+            cfg: Annotated[DictConfig, IgnoredForEq],
             sec:int = 0
             ):
     print(f"A function that is reading from {input} and writing to {output} in {sec} seconds.")
@@ -243,7 +216,7 @@ def slowfunction(
         f.write(OmegaConf.to_yaml(cfg))
 
 @hydra.main(version_base=None, config_path=str(CONFIG), config_name="config")
-def my_hydra(cfg: Annotated[DictConfig,IgnoredForEq]) -> None:
+def my_hydra(cfg: Annotated[DictConfig, IgnoredForEq]) -> None:
 
     BLD = pathlib.Path(cfg["bld_path"])
     BLD.mkdir(exist_ok=True)
@@ -267,31 +240,90 @@ Or you can use it for sweeps also.
 
 
 ## How to skip/build Tasks
-To use different skip and build mode you can set the `buildmode` parameter, when creating the task.
+To use different build modes you can set the `buildmode` parameter when creating the task:
 
 ```python
+from depio.BuildMode import BuildMode
+
 @task("datapipeline", buildmode=BuildMode.ALWAYS)
 def funcdec(output: Annotated[pathlib.Path, Product]):
-
     with open(output,'w') as f:
         f.write("Hallo from depio")
-    return 1
 ```
 
-There are three values to chose from
-- `BuildMode.NEVER`: Never run the task.
-- `BuildMode.IF_MISSING`: Run this tasks if one of the output files is missing. This option does not check if a new input is given or if a previous task (with a dependency) is run.  
-- `BuildMode.ALWAYS`: Always run this task.
-- `BuildMode.IF_NEW`: Run if the inputs are newer as the output file, or if any of the previous tasks (producing a dependency) is run.
+There are seven values to choose from:
+- `BuildMode.NEVER` — Never run the task; always skip it.
+- `BuildMode.IF_MISSING` — Run if any product file is missing. Does not check input timestamps or upstream task results.
+- `BuildMode.ALWAYS` — Always run, unconditionally.
+- `BuildMode.IF_NEW` — Run if any product is missing, or if any upstream task ran in this pipeline invocation.
+- `BuildMode.IF_OLDER` — Run if any product is missing, or if any product is older than its path dependencies (make-style timestamp comparison).
+- `BuildMode.IF_OLD` — Run if any product is missing, or if any product is older than a configurable age threshold (`max_age_seconds` in `.depio/config.json`, default 24 h). Can also be set per-task via `@task(..., max_age=3600)`.
+- `BuildMode.IF_CODE_CHANGED` — Run if any product is missing, or if the task function's source code has changed since the last successful run. Hashes are stored in `.depio/task_hashes.json`. Enable per-task via `@task(..., track_code=True)`.
 
-In addition, there are flags, you can hand over to the pipeline:
-- `clear_screen` : bool : If set, at every refresh it tries to clear the screen such that the table is always on the top of the screen. Does not work in all terminals right now.
-- `hide_successful_terminated_tasks` : bool : If set, successfully terminated (skipped,finished) tasks do not show up in the list.
-- `submit_only_if_runnable` : bool : If set, only ready for execution jobs get submitted. 
-- `refreshrate` : float : The refreshrate of the list in seconds. It is just lower bound and added as a sleep before the next set of states is queried from the executor.
+In addition, there are flags you can pass to the pipeline:
+- `clear_screen` : `bool` — Clear the screen on each refresh so the TUI stays at the top.
+- `hide_successful_terminated_tasks` : `bool` — Hide successfully finished or skipped tasks from the list.
+- `submit_only_if_runnable` : `bool` — Only submit tasks that are immediately ready for execution.
+- `refreshrate` : `float` — Polling interval in seconds. Can also be set in `.depio/config.json`.
+- `quiet` : `bool` — Disable the TUI entirely; useful for scripted or CI runs.
+
+## Hooks
+depio supports callbacks that fire when a task or the whole pipeline finishes:
+
+```python
+from depio.hooks import TaskResult, PipelineResult
+
+def on_done(result: TaskResult):
+    print(f"{result.name} finished with status {result.status}")
+
+pipeline = Pipeline(
+    depioExecutor=ParallelExecutor(),
+    on_task_finished=on_done,
+)
+```
+
+To automatically save each task's stdout/stderr to disk, use the built-in save hook:
+```python
+from pathlib import Path
+
+pipeline = Pipeline(
+    depioExecutor=ParallelExecutor(),
+    on_task_finished=Pipeline.make_save_hook(Path("outputs/")),
+)
+```
+
+Available callbacks on `Pipeline`: `on_task_finished`, `on_task_failed`, `on_pipeline_finished`.
+Per-task callbacks can also be set directly on `Task` objects: `on_finished`, `on_task_failed`.
+
+## Configuration
+On first run, depio creates `.depio/config.json` with sensible defaults:
+
+```json
+{
+  "pipeline": { "refreshrate": 1.0 },
+  "task": {
+    "default_buildmode": "IF_MISSING",
+    "max_age_seconds": 86400,
+    "code_hash_method": "source"
+  },
+  "executor": {
+    "parallel": {},
+    "slurm": {
+      "max_jobs_pending": 45,
+      "max_jobs_queued": 20,
+      "partition": "gpu",
+      "time_minutes": 2880,
+      "mem_gb": 32,
+      "gpus_per_node": 0
+    }
+  }
+}
+```
+
+Edit this file to change defaults for your project without touching any code.
 
 ## How to develop
-Create an editable egg and install it.
+Create an editable install:
 
 ```bash
 pip install -e .
