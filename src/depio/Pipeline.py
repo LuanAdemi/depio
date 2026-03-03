@@ -343,6 +343,93 @@ class Pipeline:
                 ))
         return Path(output_dir)
 
+    # ── Visualization ────────────────────────────────────────────────────────
+
+    def visualize(self,
+                  filename: Optional[Path] = None,
+                  format: str = "png",
+                  view: bool = False,
+                  orientation: str = "vertical") -> "graphviz.Digraph":
+        """Render the pipeline structure as a directed graph using Graphviz.
+
+        Each :class:`Task` becomes a node.  Dependencies between tasks are
+        drawn as edges.  Path-based dependencies that are not produced by a
+        task are represented as dashed box nodes.  Node colours reflect the
+        current task status (via :meth:`depio.Task.Task.statuscolor`).
+
+        The graph can be laid out either vertically (top-to-bottom) or
+        horizontally (left-to-right) by specifying ``orientation``.  The
+        underlying Graphviz attribute ``rankdir`` is set to ``LR`` when
+        ``orientation`` is ``"horizontal"``; the default behaviour
+        corresponds to ``"vertical"``.
+
+        Args:
+            filename: If provided the graph will be rendered to this file
+                (Graphviz will append the appropriate suffix based on
+                ``format``).  When ``None`` the method simply returns the
+                :class:`graphviz.Digraph` instance without rendering to disk.
+            format: Output format understood by Graphviz (``'png'``,
+                ``'pdf'`` etc.).  Ignored when ``filename`` is ``None``.
+            view: Passed through to :meth:`graphviz.Digraph.render` and
+                controls whether the viewer is launched (only when
+                ``filename`` is set).
+            orientation: ``"vertical"`` (default) or ``"horizontal"``.
+                ``"horizontal"`` produces a left-to-right layout; other
+                values are case-insensitively accepted but treated the same
+                as ``"vertical"``.
+
+        Returns:
+            The :class:`graphviz.Digraph` object representing the pipeline.
+
+        Raises:
+            ImportError: if the ``graphviz`` Python package is not installed.
+        """
+        try:
+            import graphviz
+        except ImportError as e:
+            raise ImportError("The graphviz package is required for pipeline "
+                              "visualization.  Install it with ``pip install "
+                              "graphviz``") from e
+
+        # Ensure DAG edges have been computed.
+        self._solve_order()
+
+        dot = graphviz.Digraph(name=self.name, format=format)
+
+        # orient graph if requested
+        if isinstance(orientation, str) and orientation.lower().startswith("h"):
+            # left-to-right layout
+            dot.attr(rankdir="LR")
+
+        # create a unique node identifier for each task; use the queue id if
+        # available to make output more readable.
+        def _node_id(task: "Task") -> str:
+            if getattr(task, "_queue_id", None) is not None:
+                return f"t{task._queue_id}"
+            return f"t{hex(id(task))}"
+
+        # add nodes
+        for task in self.tasks:
+            nid = _node_id(task)
+            colour = task.statuscolor()
+            dot.node(nid, label=task.name, style="outlined", color="black", shape="rectangle")
+
+        # add edges
+        for task in self.tasks:
+            dst = _node_id(task)
+            for dep in task.task_dependencies or []:
+                src = _node_id(dep)
+                dot.edge(src, dst)
+            for path in task.path_dependencies or []:
+                # represent raw path dependencies as dashed boxes
+                pid = f"p{str(path)}"
+                dot.node(pid, label=str(path), shape="box", style="dashed")
+                dot.edge(pid, dst)
+
+        if filename is not None:
+            dot.render(str(filename), view=view, cleanup=True)
+        return dot
+
     # ── Terminal / exit helpers ────────────────────────────────────────────────
 
     def _restore_terminal(self):

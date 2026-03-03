@@ -155,5 +155,13 @@ pipeline.add_task(Task(
     buildmode=BuildMode.ALWAYS,
 ))
 
+# the DAG can be rendered to a picture if you have graphviz installed.
+# the file ``functional_demo_graph.pdf`` will appear in the build directory.
+try:
+    pipeline.visualize(filename=BLD / "functional_demo_graph", format="pdf", orientation="horizontal")
+except ImportError:
+    # graphviz not available; ignore
+    pass
+
 # ── Run ───────────────────────────────────────────────────────────────────────
 pipeline.run()
