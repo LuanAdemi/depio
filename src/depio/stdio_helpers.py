@@ -150,7 +150,6 @@ class LocalProxy:
     __invert__ = lambda x: ~(x._get_current_object())
     __complex__ = lambda x: complex(x._get_current_object())
     __int__ = lambda x: int(x._get_current_object())
-    __long__ = lambda x: long(x._get_current_object())  # type: ignore # noqa
     __float__ = lambda x: float(x._get_current_object())
     __oct__ = lambda x: oct(x._get_current_object())
     __hex__ = lambda x: hex(x._get_current_object())
@@ -170,13 +169,9 @@ class LocalProxy:
     __deepcopy__ = lambda x, memo: copy.deepcopy(x._get_current_object(), memo)
 
 
-def redirect(stringio: StringIO):
+def redirect(stringio: StringIO) -> None:
     """
-    Enables the redirect for the current thread's output to a single cStringIO
-    object and returns the object.
-
-    :return: The StringIO object.
-    :rtype: ``cStringIO.StringIO``
+    Redirects the current thread's stdout/stderr to the given StringIO buffer.
     """
     # Get the current thread's identity.
     ident = threading.current_thread().ident
@@ -185,13 +180,9 @@ def redirect(stringio: StringIO):
     thread_proxies[ident] = stringio
 
 
-def stop_redirect():
+def stop_redirect() -> None:
     """
-    Enables the redirect for the current thread's output to a single cStringIO
-    object and returns the object.
-
-    :return: The final string value.
-    :rtype: ``str``
+    Stops redirecting the current thread's stdout/stderr.
     """
     # Get the current thread's identity.
     ident = threading.current_thread().ident

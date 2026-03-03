@@ -1,4 +1,5 @@
 .idea
+.depio
 src/depio.egg-info
 src/depio/__pycache__
 tests/__pycache__

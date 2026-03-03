@@ -1,38 +1,53 @@
-import unittest
-
+"""
+Tests for _get_args_dict(): maps positional and keyword arguments to a
+{name: value} dictionary based on the function's parameter names.
+"""
 from depio.Task import _get_args_dict
 
 
-class TestGetArgsDict(unittest.TestCase):
+def test_positional_args_only():
+    def fn(a, b, c):
+        pass
 
-    def test_get_args_dict_no_additional_args(self):
-        def test_fn(a, b, c):
-            pass
-
-        result = _get_args_dict(test_fn, [1, 2, 3], {})
-        self.assertEqual(result, {'a': 1, 'b': 2, 'c': 3})
-
-    def test_get_args_dict_with_kwargs(self):
-        def test_fn(a, b, c, **kwargs):
-            pass
-
-        result = _get_args_dict(test_fn, [1, 2, 3], {'d': 4, 'e': 5})
-        self.assertEqual(result, {'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 5})
-
-    def test_get_args_dict_with_kwargs_swapped(self):
-        def test_fn(a, b, c, **kwargs):
-            pass
-
-        result = _get_args_dict(test_fn, [1, 2, 3], {'d': 5, 'e': 4})
-        self.assertEqual(result, {'a': 1, 'b': 2, 'c': 3, 'd': 5, 'e': 4})
-
-    def test_get_args_dict_with_partial_args_and_kwargs(self):
-        def test_fn(a, b, c, *args, **kwargs):
-            pass
-
-        result = _get_args_dict(test_fn, [1], {'b': 2, 'c': 3, 'd': 4})
-        self.assertEqual(result, {'a': 1, 'b': 2, 'c': 3, 'd': 4})
+    result = _get_args_dict(fn, [1, 2, 3], {})
+    assert result == {'a': 1, 'b': 2, 'c': 3}
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_positional_args_with_extra_kwargs():
+    def fn(a, b, c, **kwargs):
+        pass
+
+    result = _get_args_dict(fn, [1, 2, 3], {'d': 4, 'e': 5})
+    assert result == {'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 5}
+
+
+def test_kwargs_order_preserved():
+    def fn(a, b, c, **kwargs):
+        pass
+
+    result = _get_args_dict(fn, [1, 2, 3], {'d': 5, 'e': 4})
+    assert result == {'a': 1, 'b': 2, 'c': 3, 'd': 5, 'e': 4}
+
+
+def test_mixed_positional_and_kwargs():
+    def fn(a, b, c, *args, **kwargs):
+        pass
+
+    result = _get_args_dict(fn, [1], {'b': 2, 'c': 3, 'd': 4})
+    assert result == {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+
+
+def test_no_args_no_kwargs():
+    def fn():
+        pass
+
+    result = _get_args_dict(fn, [], {})
+    assert result == {}
+
+
+def test_kwargs_only():
+    def fn(a, b):
+        pass
+
+    result = _get_args_dict(fn, [], {'a': 10, 'b': 20})
+    assert result == {'a': 10, 'b': 20}

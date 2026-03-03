@@ -16,16 +16,21 @@ class TaskStatus(enum.Enum):
     UNKNOWN = enum.auto()
 
 
-TERMINAL_STATES = [
-            TaskStatus.FINISHED,
-            TaskStatus.FAILED,
-            TaskStatus.SKIPPED,
-            TaskStatus.DEPFAILED,
-            TaskStatus.CANCELED]
-SUCCESSFUL_TERMINAL_STATES = [
-            TaskStatus.FINISHED,
-            TaskStatus.SKIPPED]
-FAILED_TERMINAL_STATES = [
-            TaskStatus.FAILED,
-            TaskStatus.DEPFAILED,
-            TaskStatus.CANCELED]
+TERMINAL_STATES: frozenset[TaskStatus] = frozenset({
+    TaskStatus.FINISHED,
+    TaskStatus.FAILED,
+    TaskStatus.SKIPPED,
+    TaskStatus.DEPFAILED,
+    TaskStatus.CANCELED,
+})
+SUCCESSFUL_TERMINAL_STATES: frozenset[TaskStatus] = frozenset({
+    TaskStatus.FINISHED,
+    TaskStatus.SKIPPED,
+})
+FAILED_TERMINAL_STATES: frozenset[TaskStatus] = frozenset({
+    TaskStatus.FAILED,
+    TaskStatus.DEPFAILED,
+    TaskStatus.CANCELED,
+})
+
+__all__ = ["TaskStatus", "TERMINAL_STATES", "SUCCESSFUL_TERMINAL_STATES", "FAILED_TERMINAL_STATES"]
