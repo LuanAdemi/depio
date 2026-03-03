@@ -18,7 +18,7 @@ import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 from depio.Executors import ParallelExecutor
-from depio.optuna_integration import run_optuna_study
+from depio.integrations.optuna import run_optuna_study
 
 
 # ── Objective functions ───────────────────────────────────────────────────────
@@ -26,14 +26,14 @@ from depio.optuna_integration import run_optuna_study
 def sphere(trial: optuna.Trial) -> float:
     """Sphere — minimum 0 at the origin."""
     xs = [trial.suggest_float(f"x{i}", -5.0, 5.0) for i in range(6)]
-    sleep(1)  # simulate expensive evaluation
+    sleep(2)  # simulate expensive evaluation
     return sum(x ** 2 for x in xs)
 
 
 def rosenbrock(trial: optuna.Trial) -> float:
     """Rosenbrock — minimum 0 at (1, 1, 1, 1)."""
     xs = [trial.suggest_float(f"x{i}", -5.0, 5.0) for i in range(4)]
-    sleep(1.5)  # simulate more expensive evaluation
+    sleep(4.5)  # simulate more expensive evaluation
     return sum(
         100 * (xs[i + 1] - xs[i] ** 2) ** 2 + (1 - xs[i]) ** 2
         for i in range(len(xs) - 1)

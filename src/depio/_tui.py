@@ -74,6 +74,8 @@ def render_task_list(p: "Pipeline") -> Panel:
     above   = p._scroll_offset
     below   = total_display - (p._scroll_offset + len(visible))
 
+    has_variants = any(task.description for task in p.tasks)
+
     table = Table(
         box=box.SIMPLE_HEAD,
         show_edge=False,
@@ -82,7 +84,9 @@ def render_task_list(p: "Pipeline") -> Panel:
         header_style="bold",
     )
     table.add_column("#",    width=4,  style="dim")
-    table.add_column("Name", ratio=1)
+    table.add_column("Name", ratio=2 if has_variants else 1)
+    if has_variants:
+        table.add_column("Description", ratio=1, style="dim")
     if has_slurm:
         table.add_column("Slurm ID",     width=10)
         table.add_column("Cluster State", width=14)
@@ -108,16 +112,18 @@ def render_task_list(p: "Pipeline") -> Panel:
         deps_str = ",".join(str(t._queue_id) for t in (task.task_dependencies or [])) or "–"
         row_style = "bold reverse" if i == p._selected_task_idx else None
 
+        variant_cells = [task.description or ""] if has_variants else []
+
         if has_slurm:
             table.add_row(
-                str(task.id), task.name,
+                str(task.id), task.name, *variant_cells,
                 str(task.slurmid or "–"), str(slurm_state or "–"),
                 badge, duration, deps_str,
                 style=row_style,
             )
         else:
             table.add_row(
-                str(task.id), task.name,
+                str(task.id), task.name, *variant_cells,
                 badge, duration, deps_str,
                 style=row_style,
             )

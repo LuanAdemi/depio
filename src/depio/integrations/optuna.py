@@ -11,7 +11,7 @@ Basic usage::
 
     import optuna
     from depio.Executors import ParallelExecutor
-    from depio.optuna_integration import run_optuna_study
+    from depio.integrations.optuna import run_optuna_study
 
     def objective(trial: optuna.Trial) -> float:
         x = trial.suggest_float("x", -10, 10)
@@ -43,16 +43,49 @@ try:
     from optuna.trial import TrialState
 except ImportError as _err:
     raise ImportError(
-        "optuna is required for depio.optuna_integration. "
+        "optuna is required for depio.integrations.optuna. "
         "Install it with: pip install optuna"
     ) from _err
 
-from .Task import Task
-from .Pipeline import Pipeline
-from .BuildMode import BuildMode
+from ..Task import Task
+from ..Pipeline import Pipeline
+from ..BuildMode import BuildMode
 
 if TYPE_CHECKING:
-    from .Executors import AbstractTaskExecutor
+    from ..Executors import AbstractTaskExecutor
+
+
+def _format_params(params: dict, max_len: int = 40) -> str:
+    """Format trial.params as a compact, truncated string for the TUI."""
+    if not params:
+        return ""
+    parts = []
+    for k, v in params.items():
+        parts.append(f"{k}={v:.2g}" if isinstance(v, float) else f"{k}={v}")
+    label = ", ".join(parts)
+    if len(label) > max_len:
+        label = label[: max_len - 1] + "…"
+    return label
+
+
+class _TrackingTrial:
+    """Proxy around optuna.Trial that updates task.description after each
+    suggest_*() call, so hyperparameter values appear in the TUI while
+    the trial is still running rather than only after it completes."""
+
+    def __init__(self, trial: "optuna.Trial", task_ref: list) -> None:
+        self._trial = trial
+        self._ref = task_ref
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._trial, name)
+        if name.startswith("suggest_"):
+            def _tracked(*args, **kwargs):
+                result = attr(*args, **kwargs)
+                self._ref[0].description = _format_params(self._trial.params)
+                return result
+            return _tracked
+        return attr
 
 
 def run_optuna_study(
@@ -131,13 +164,19 @@ def run_optuna_study(
 
         batch: list[Task] = []
         for idx in range(start, end):
+            # task_ref is a one-element list used as a mutable back-reference
+            # so that _run_trial can set task.description after the objective
+            # populates trial.params (which only happens inside the objective).
+            task_ref: list = [None]
+
             # study.ask() is intentionally inside _run_trial so it executes
             # after all previous-batch study.tell() calls have completed.
-            def _make_fn() -> Callable[[], None]:
+            def _make_fn(ref=task_ref) -> Callable[[], None]:
                 def _run_trial() -> None:
                     trial = study.ask()
+                    tracked = _TrackingTrial(trial, ref)
                     try:
-                        value = objective(trial)
+                        value = objective(tracked)
                         study.tell(trial, value)
                     except optuna.exceptions.TrialPruned:
                         study.tell(trial, state=TrialState.PRUNED)
@@ -148,11 +187,12 @@ def run_optuna_study(
                 return _run_trial
 
             task = Task(
-                name=f"trial_{idx}",
+                name=f"Trial {idx}",
                 func=_make_fn(),
                 depends_on=list(prev_batch),  # enforce batch ordering
                 buildmode=BuildMode.ALWAYS,
             )
+            task_ref[0] = task  # fill the back-reference
             batch.append(task)
             pipeline.add_task(task)
 
