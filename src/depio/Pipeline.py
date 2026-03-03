@@ -30,6 +30,7 @@ class Pipeline:
                  submit_only_if_runnable: bool = False,
                  quiet: bool = False,
                  refreshrate: float = None,
+                 exit_when_done: bool = False,
                  on_task_finished: Optional[Callable[[TaskResult], None]] = None,
                  on_task_failed: Optional[Callable[[TaskResult], None]] = None,
                  on_pipeline_finished: Optional[Callable[[PipelineResult], None]] = None):
@@ -41,6 +42,7 @@ class Pipeline:
         self.REFRESHRATE: float = refreshrate if refreshrate is not None else _cfg["pipeline"]["refreshrate"]
         self.HIDE_SUCCESSFUL_TERMINATED_TASKS: bool = hide_successful_terminated_tasks
         self.SUBMIT_ONLY_IF_RUNNABLE: bool = submit_only_if_runnable
+        self.EXIT_WHEN_DONE: bool = exit_when_done
         self.on_task_finished: Optional[Callable[[TaskResult], None]] = on_task_finished
         self.on_task_failed: Optional[Callable[[TaskResult], None]] = on_task_failed
         self.on_pipeline_finished: Optional[Callable[[PipelineResult], None]] = on_pipeline_finished
@@ -52,8 +54,6 @@ class Pipeline:
         self.depioExecutor: AbstractTaskExecutor = depioExecutor
         self.registered_products: Set[Path] = set()
         self._registered_product_strs: Set[str] = set()
-        if not self.QUIET:
-            print("Pipeline initialized")
 
         # Interactive TUI state
         self.paused = False
@@ -159,22 +159,111 @@ class Pipeline:
 
     # ── Execution loop ─────────────────────────────────────────────────────────
 
-    def run(self) -> None:
-        enable_proxy()
-        self._solve_order()
-        self.handled_tasks = []
-
+    def _setup_keyboard(self) -> bool:
         self._old_terminal_settings = None
         try:
             import termios
             import tty
             self._old_terminal_settings = termios.tcgetattr(sys.stdin)
             tty.setcbreak(sys.stdin.fileno())
-            restore_terminal = True
+            return True
         except Exception:
-            restore_terminal = False
             if not self.QUIET:
                 print("Note: Interactive commands not available on this system")
+            return False
+
+    def _submit_ready_tasks(self) -> None:
+        for task in self.tasks:
+            if task in self.handled_tasks:
+                continue
+            if task.is_ready_for_execution() or self.depioExecutor.handles_dependencies():
+                if task.should_run():
+                    if not self.SUBMIT_ONLY_IF_RUNNABLE:
+                        self.depioExecutor.submit(task, task.task_dependencies)
+                        self.handled_tasks.append(task)
+                    elif task.is_ready_for_execution():
+                        if self.depioExecutor.has_jobs_queued_limit:
+                            if len(self._get_non_terminal_tasks()) >= self.depioExecutor.max_jobs_queued:
+                                continue
+                        elif self.depioExecutor.has_jobs_pending_limit:
+                            if len(self._get_pending_tasks()) >= self.depioExecutor.max_jobs_pending:
+                                continue
+                        self.depioExecutor.submit(task, task.task_dependencies)
+                        self.handled_tasks.append(task)
+
+    def _poll_slurm_statuses(self) -> None:
+        # Refresh SLURM task statuses so is_in_terminal_state stays current
+        # even in quiet mode (where _render is a no-op and task.status is
+        # never called via the TUI).
+        for task in self.handled_tasks:
+            if task.slurmjob is not None and not task.is_in_terminal_state:
+                task._update_by_slurmjob()
+
+    def _fire_task_hooks(self) -> None:
+        for task in self.tasks:
+            if task not in self._hook_fired_tasks and task.is_in_terminal_state:
+                self._hook_fired_tasks.add(task)
+                result = TaskResult(
+                    name=task.name,
+                    status=task.status[0],
+                    stdout=task.get_stdout(),
+                    stderr=task.get_stderr(),
+                    duration=float(task.get_duration()),
+                    outputs=list(task.products),
+                )
+                # on_task_finished — global then per-task
+                for hook in filter(None, [self.on_task_finished, task.on_finished]):
+                    try:
+                        hook(result)
+                    except Exception as e:
+                        self.last_command_message = f"Hook error: {e}"
+                # on_task_failed — fires only on direct failure
+                if result.status == TaskStatus.FAILED:
+                    for hook in filter(None, [self.on_task_failed, task.on_task_failed]):
+                        try:
+                            hook(result)
+                        except Exception as e:
+                            self.last_command_message = f"Hook error: {e}"
+
+    def _check_pipeline_completion(self) -> None:
+        # Mark done but stay alive so the user can browse stdouts
+        if not self._pipeline_done and all(
+                task.is_in_terminal_state for task in self.tasks):
+            self._pipeline_done = True
+            self._pipeline_failed = any(
+                task.is_in_failed_terminal_state for task in self.tasks)
+            self.last_command_message = (
+                "Pipeline finished with failures. Press Q to quit."
+                if self._pipeline_failed else
+                "All tasks finished. Press Q to quit."
+            )
+            # on_pipeline_finished
+            if self.on_pipeline_finished is not None:
+                pipeline_result = PipelineResult(
+                    name=self.name,
+                    success=not self._pipeline_failed,
+                    task_results=[
+                        TaskResult(
+                            name=t.name,
+                            status=t.status[0],
+                            stdout=t.get_stdout(),
+                            stderr=t.get_stderr(),
+                            duration=float(t.get_duration()),
+                            outputs=list(t.products),
+                        ) for t in self.tasks
+                    ],
+                )
+                try:
+                    self.on_pipeline_finished(pipeline_result)
+                except Exception as e:
+                    self.last_command_message = f"Pipeline hook error: {e}"
+
+    def run(self) -> None:
+        enable_proxy()
+        self._solve_order()
+        self.handled_tasks = []
+
+        restore_terminal = self._setup_keyboard()
 
         def _render(live, *, refresh=False):
             if self.QUIET:
@@ -198,91 +287,14 @@ class Pipeline:
                                 time.sleep(0.05)
                             continue
 
-                        # Submit newly runnable tasks
-                        for task in self.tasks:
-                            if task in self.handled_tasks:
-                                continue
-                            if task.is_ready_for_execution() or self.depioExecutor.handles_dependencies():
-                                if task.should_run():
-                                    if not self.SUBMIT_ONLY_IF_RUNNABLE:
-                                        self.depioExecutor.submit(task, task.task_dependencies)
-                                        self.handled_tasks.append(task)
-                                    elif task.is_ready_for_execution():
-                                        if self.depioExecutor.has_jobs_queued_limit:
-                                            if len(self._get_non_terminal_tasks()) >= self.depioExecutor.max_jobs_queued:
-                                                continue
-                                        elif self.depioExecutor.has_jobs_pending_limit:
-                                            if len(self._get_pending_tasks()) >= self.depioExecutor.max_jobs_pending:
-                                                continue
-                                        self.depioExecutor.submit(task, task.task_dependencies)
-                                        self.handled_tasks.append(task)
-
+                        self._submit_ready_tasks()
                         _render(live)
+                        self._poll_slurm_statuses()
+                        self._fire_task_hooks()
+                        self._check_pipeline_completion()
 
-                        # Refresh SLURM task statuses so is_in_terminal_state
-                        # stays current even in quiet mode (where _render is a
-                        # no-op and task.status is never called via the TUI).
-                        for task in self.handled_tasks:
-                            if task.slurmjob is not None and not task.is_in_terminal_state:
-                                task._update_by_slurmjob()
-
-                        # Fire hooks for each newly terminal task
-                        for task in self.tasks:
-                            if task not in self._hook_fired_tasks and task.is_in_terminal_state:
-                                self._hook_fired_tasks.add(task)
-                                result = TaskResult(
-                                    name=task.name,
-                                    status=task.status[0],
-                                    stdout=task.get_stdout(),
-                                    stderr=task.get_stderr(),
-                                    duration=float(task.get_duration()),
-                                    outputs=list(task.products),
-                                )
-                                # on_task_finished — global then per-task
-                                for hook in filter(None, [self.on_task_finished, task.on_finished]):
-                                    try:
-                                        hook(result)
-                                    except Exception as e:
-                                        self.last_command_message = f"Hook error: {e}"
-                                # on_task_failed — fires only on direct failure
-                                if result.status == TaskStatus.FAILED:
-                                    for hook in filter(None, [self.on_task_failed, task.on_task_failed]):
-                                        try:
-                                            hook(result)
-                                        except Exception as e:
-                                            self.last_command_message = f"Hook error: {e}"
-
-                        # Mark done but stay alive so the user can browse stdouts
-                        if not self._pipeline_done and all(
-                                task.is_in_terminal_state for task in self.tasks):
-                            self._pipeline_done = True
-                            self._pipeline_failed = any(
-                                task.is_in_failed_terminal_state for task in self.tasks)
-                            self.last_command_message = (
-                                "Pipeline finished with failures. Press Q to quit."
-                                if self._pipeline_failed else
-                                "All tasks finished. Press Q to quit."
-                            )
-                            # on_pipeline_finished
-                            if self.on_pipeline_finished is not None:
-                                pipeline_result = PipelineResult(
-                                    name=self.name,
-                                    success=not self._pipeline_failed,
-                                    task_results=[
-                                        TaskResult(
-                                            name=t.name,
-                                            status=t.status[0],
-                                            stdout=t.get_stdout(),
-                                            stderr=t.get_stderr(),
-                                            duration=float(t.get_duration()),
-                                            outputs=list(t.products),
-                                        ) for t in self.tasks
-                                    ],
-                                )
-                                try:
-                                    self.on_pipeline_finished(pipeline_result)
-                                except Exception as e:
-                                    self.last_command_message = f"Pipeline hook error: {e}"
+                        if self._pipeline_done and self.EXIT_WHEN_DONE:
+                            return
 
                         # Poll input at 50 ms intervals; redraw immediately on keypress
                         deadline = time.time() + self.REFRESHRATE

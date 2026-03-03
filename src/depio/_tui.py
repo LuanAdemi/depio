@@ -202,7 +202,10 @@ def render_task_detail(p: "Pipeline") -> Panel:
     if stderr_content:
         parts.append(Panel(Text(stderr_content), title="stderr", border_style="red dim", padding=(0, 1)))
 
+    n = len(p.tasks)
+    pos = (p._selected_task_idx or 0) + 1
     footer = Text.assemble(
+        ("↑↓", "bold cyan"), (f"  prev/next task ({pos}/{n})  ", "dim"),
         ("Esc", "bold cyan"), ("  back to overview", "dim"),
     )
     parts.extend([Rule(style="bright_black"), footer])

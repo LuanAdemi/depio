@@ -19,8 +19,13 @@ dependencies = [
     "coverage",
     "termcolor",
     "attrs",
-    "rich (>=14.2.0,<15.0.0)"
+    "rich (>=14.2.0,<15.0.0)",
+    "omegaconf (>=2.3.0,<3.0.0)",
+    "hydra-core (>=1.3.2,<2.0.0)"
 ]
+
+[project.optional-dependencies]
+optuna = ["optuna"]
 
 [tool.pytest.ini_options]
 pythonpath = [
@@ -30,3 +35,8 @@ pythonpath = [
 [project.urls]
 Homepage = "https://github.com/noppelmax/depio"
 Issues = "https://github.com/noppelmax/depio/issues"
+
+[dependency-groups]
+dev = [
+    "optuna (>=4.7.0,<5.0.0)"
+]
