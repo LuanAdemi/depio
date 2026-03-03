@@ -77,40 +77,7 @@ run_optuna_study(
 )
 
 
-# ── 3. CMA-ES (evolution strategy) ───────────────────────────────────────────
-# CMA-ES is a population-based algorithm:
-#
-#   for each generation:
-#     ask()  × popsize  — sample a population from a multivariate Gaussian
-#     tell() × popsize  — evaluate; update the covariance matrix
-#
-# Setting batch_size = popsize maps one depio Pipeline to one generation:
-#   - All popsize trials in the batch run in parallel inside the pipeline.
-#   - pipeline.run() returns only after every study.tell() has been called.
-#   - The next study.ask() calls therefore see the full updated distribution.
-#
-# Default CMA-ES popsize for n_params parameters:
-#   popsize = 4 + floor(3 * log(n_params))
-# For 4 parameters: 4 + floor(3 * ln(4)) ≈ 8
-
-N_PARAMS = 4
-POPSIZE  = 4 + math.floor(3 * math.log(N_PARAMS))   # = 8
-N_GEN    = 6                                          # 6 generations
-
-study_cmaes = optuna.create_study(
-    sampler=optuna.samplers.CmaEsSampler(seed=0, popsize=POPSIZE),
-    direction="minimize",
-)
-run_optuna_study(
-    study_cmaes,
-    rosenbrock,
-    n_trials=N_GEN * POPSIZE,
-    executor=ParallelExecutor(),
-    batch_size=POPSIZE,   # ← one generation per pipeline run
-)
-
-
-# ── 4. CMA-ES on SLURM (illustrative — requires a cluster) ───────────────────
+# ── 3. CMA-ES on SLURM (illustrative — requires a cluster) ───────────────────
 # Swap the executor for SubmitItExecutor to run each generation on the cluster.
 # The batch_size logic is identical; depio handles the SLURM job submission.
 #
@@ -136,8 +103,3 @@ print("=" * 60)
 print(f"  Random  (sphere,    40 trials)   best = {study_random.best_value:.6f}")
 print(f"  TPE     (rosenbrock, 30 trials)  best = {study_tpe.best_value:.6f}")
 print(f"  CMA-ES  (rosenbrock, {N_GEN * POPSIZE} trials)  best = {study_cmaes.best_value:.6f}")
-print()
-print("batch_size guidance:")
-print("  Random / Grid  → batch_size = n_trials   (one big parallel burst)")
-print("  TPE / GP-BO    → batch_size = n_workers  (balance adapt vs parallelism)")
-print(f"  CMA-ES / NSGA  → batch_size = popsize    (one pipeline = one generation)")
