@@ -11,7 +11,7 @@ class DependencyNotMetException(Exception):
     pass
 
 
-class TaskRaisedExceptionException(Exception):
+class TaskRaisedException(Exception):
     pass
 
 
@@ -30,3 +30,15 @@ class ProductAlreadyRegisteredException(Exception):
 
 class DependencyNotAvailableException(Exception):
     pass
+
+
+__all__ = [
+    "ProductNotProducedException",
+    "ProductNotUpdatedException",
+    "DependencyNotMetException",
+    "TaskRaisedException",
+    "UnknownStatusException",
+    "TaskNotInQueueException",
+    "ProductAlreadyRegisteredException",
+    "DependencyNotAvailableException",
+]

@@ -12,7 +12,7 @@ from depio.exceptions import (
     DependencyNotMetException,
     ProductNotProducedException,
     ProductNotUpdatedException,
-    TaskRaisedExceptionException,
+    TaskRaisedException,
 )
 from depio.BuildMode import BuildMode
 
@@ -118,7 +118,7 @@ def test_run_wraps_exception_in_task_raised_exception():
 
     task = _make_runnable(Task("t", boom, buildmode=BuildMode.ALWAYS))
 
-    with pytest.raises(TaskRaisedExceptionException):
+    with pytest.raises(TaskRaisedException):
         task.run()
 
     assert task._status == TaskStatus.FAILED
@@ -130,7 +130,7 @@ def test_run_exception_does_not_set_end_time():
 
     task = _make_runnable(Task("t", boom, buildmode=BuildMode.ALWAYS))
 
-    with pytest.raises(TaskRaisedExceptionException):
+    with pytest.raises(TaskRaisedException):
         task.run()
 
     assert task.end_time is None

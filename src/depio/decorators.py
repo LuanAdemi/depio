@@ -3,14 +3,13 @@ from .Pipeline import Pipeline
 from .Task import Task
 
 
-def task(name: str | None, pipeline: Pipeline | None = None, buildmode: BuildMode = BuildMode.IF_MISSING, *dec_args,
-         **dec_kwargs):
+def task(name: str | None, pipeline: Pipeline | None = None, buildmode: BuildMode = BuildMode.IF_MISSING,
+         max_age: float = None, track_code: bool = False):
     def wrapper(func):
         def decorator(*func_args, **func_kwargs):
-            # Create and add the task
-            t = Task(name, func=func, buildmode=buildmode, func_args=func_args, func_kwargs=func_kwargs)
-
-            # Not call the function!
+            # Build the Task object; do NOT call the underlying function here.
+            t = Task(name, func=func, buildmode=buildmode, max_age=max_age, track_code=track_code,
+                     func_args=func_args, func_kwargs=func_kwargs)
 
             if pipeline:
                 pipeline.add_task(t)
@@ -22,4 +21,4 @@ def task(name: str | None, pipeline: Pipeline | None = None, buildmode: BuildMod
     return wrapper
 
 
-__all__ = [task]
+__all__ = ["task"]

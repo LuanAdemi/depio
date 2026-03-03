@@ -12,7 +12,8 @@ import sys
 from .BuildMode import BuildMode
 from .TaskStatus import TaskStatus, TERMINAL_STATES, SUCCESSFUL_TERMINAL_STATES, FAILED_TERMINAL_STATES
 from .stdio_helpers import redirect, stop_redirect
-from .exceptions import ProductNotProducedException, TaskRaisedExceptionException, UnknownStatusException, \
+from .code_hash import has_code_changed, record_hash
+from .exceptions import ProductNotProducedException, TaskRaisedException, UnknownStatusException, \
     ProductNotUpdatedException, \
     DependencyNotMetException
 
@@ -57,7 +58,7 @@ _status_texts = {
 
 
 def python_version_is_greater_or_equal_to_3_10():
-    return sys.version_info.major > 3 and sys.version_info.minor >= 10
+    return sys.version_info.major > 3 or (sys.version_info.major == 3 and sys.version_info.minor >= 10)
 
 
 # from https://stackoverflow.com/questions/218616/how-to-get-method-parameter-names
@@ -103,7 +104,8 @@ def _parse_annotation_for_metaclass(func, args_dict, metaclass) -> List[str]:
 
         # Annotated[T, metadata...]
         if get_origin(annotation) is Annotated:
-            assert len(get_args(annotation)) == 2, f"Malformed annotation. Expected Annotated[T, meta], but got {annotation}"
+            if len(get_args(annotation)) != 2:
+                raise ValueError(f"Malformed annotation. Expected Annotated[T, meta], but got {annotation}")
             
             T, *metadata = get_args(annotation)
 
@@ -137,9 +139,13 @@ class Task:
     def __init__(self, name: str, func: Callable, func_args: List = None, func_kwargs: List = None,
                  produces: List[Path] = None, depends_on: List[Union[Path, Task]] = None,
                  buildmode: BuildMode = BuildMode.IF_MISSING,
+                 max_age: float = None,
+                 track_code: bool = False,
                  slurm_parameters: Dict = None,
                  arg_resolver: Callable = None,
-                 description: str = None):
+                 description: str = None,
+                 on_finished: Callable = None,
+                 on_task_failed: Callable = None):
 
         self.end_time = None
         self.start_time = None
@@ -155,11 +161,14 @@ class Task:
         self.func_args: List = func_args or []
         self.func_kwargs: Dict = func_kwargs or {}
         self.buildmode: BuildMode = buildmode
+        self.max_age: float = max_age  # seconds; used by IF_OLD mode
+        self.track_code: bool = track_code
+        self._code_hash_key: str = f"{func.__module__}.{func.__qualname__}"
+        self._decided_to_run: bool = False  # set True the first time should_run() → True
         self.slurm_parameters: Dict = slurm_parameters or {}
 
         self.stdout: StringIO = StringIO()
         self.stderr: StringIO = StringIO()
-        self.slurmjob = None
         self._slurmid = None
         self._slurmstate: str = ""
 
@@ -168,12 +177,12 @@ class Task:
         if arg_resolver is not None:
             self.func_args, self.func_kwargs = arg_resolver(self.func, self.func_args, self.func_kwargs)
 
-        args_dict: Dict[str, typing.Any] = _get_args_dict(func, self.func_args, self.func_kwargs)
+        args_dict_flat: Dict[str, typing.Any] = _get_args_dict(func, self.func_args, self.func_kwargs)
 
         # Parse dependencies and products from the annotations and merge with args
-        products_args: List[str] = _parse_annotation_for_metaclass(func, args_dict, Product)
-        dependencies_args: List[str] = _parse_annotation_for_metaclass(func, args_dict, Dependency)
-        ignored_for_eq_args: List[str] = _parse_annotation_for_metaclass(func, args_dict, IgnoredForEq)
+        products_args: List[str] = _parse_annotation_for_metaclass(func, args_dict_flat, Product)
+        dependencies_args: List[str] = _parse_annotation_for_metaclass(func, args_dict_flat, Dependency)
+        ignored_for_eq_args: List[str] = _parse_annotation_for_metaclass(func, args_dict_flat, IgnoredForEq)
 
         args_dict: Dict[str, typing.Any] = _get_args_dict_nested(func, self.func_args, self.func_kwargs)
         self.cleaned_args: Dict[str, typing.Any] = {k: v for k, v in args_dict.items() if k not in ignored_for_eq_args}
@@ -188,6 +197,8 @@ class Task:
         self.task_dependencies = None
 
         self.dependent_tasks = []
+        self.on_finished: Callable = on_finished
+        self.on_task_failed: Callable = on_task_failed
 
     def is_ready_for_execution(self) -> bool:
         if not self.should_run():
@@ -220,15 +231,50 @@ class Task:
         missing_products: List[Path] = [p for p in self.products if not p.exists()]
 
         if self.buildmode == BuildMode.ALWAYS:
-            return True
+            result = True
         elif self.buildmode == BuildMode.IF_MISSING:
-            return len(missing_products) > 0
+            result = len(missing_products) > 0
         elif self.buildmode == BuildMode.IF_NEW:
-            return any(t.should_run() for t in self.task_dependencies) or len(missing_products) > 0
+            result = any(t.should_run() for t in self.task_dependencies) or len(missing_products) > 0
+        elif self.buildmode == BuildMode.IF_OLDER:
+            if missing_products:
+                result = True
+            else:
+                path_deps = [d for d in (self.path_dependencies or []) if d.exists()]
+                if not path_deps:
+                    result = False
+                else:
+                    oldest_output = min(p.stat().st_mtime for p in self.products)
+                    newest_input  = max(d.stat().st_mtime for d in path_deps)
+                    result = oldest_output < newest_input
+        elif self.buildmode == BuildMode.IF_OLD:
+            if missing_products:
+                result = True
+            else:
+                from .config import get_config
+                max_age = self.max_age if self.max_age is not None else get_config()["task"]["max_age_seconds"]
+                now = time.time()
+                result = any(now - p.stat().st_mtime > max_age for p in self.products)
+        elif self.buildmode == BuildMode.IF_CODE_CHANGED:
+            result = bool(missing_products) or has_code_changed(self._code_hash_key, self.func)
         elif self.buildmode == BuildMode.NEVER:
-            return False
+            result = False
         else:
-            raise Exception(f"Unkown buildmode: {self.buildmode}")
+            raise ValueError(f"Unknown buildmode: {self.buildmode}")
+
+        if self.track_code and not result:
+            result = has_code_changed(self._code_hash_key, self.func)
+
+        # Universal invariant: if any upstream task decided to run this session,
+        # this task must also run regardless of its own build mode, so that
+        # downstream outputs never silently go stale.
+        if not result and self.task_dependencies:
+            result = any(t._decided_to_run for t in self.task_dependencies)
+
+        if result:
+            self._decided_to_run = True
+
+        return result
 
     def _check_path_dependencies(self):
         not_existing_path_dependencies: List[str] = \
@@ -272,7 +318,7 @@ class Task:
             self.func(*self.func_args, **self.func_kwargs)
         except Exception as e:
             self.set_to_failed()
-            raise TaskRaisedExceptionException(e)
+            raise TaskRaisedException(e)
         finally:
             stop_redirect()
 
@@ -289,6 +335,9 @@ class Task:
 
         self._status = TaskStatus.FINISHED
         self.end_time = time.time()
+
+        if self.track_code or self.buildmode == BuildMode.IF_CODE_CHANGED:
+            record_hash(self._code_hash_key, self.func)
 
     def barerun(self):
         self.func(*self.func_args, **self.func_kwargs)
@@ -333,8 +382,7 @@ class Task:
     @property
     def slurmjob_status(self):
         if self.slurmjob is None: return ""
-
-        if self._slurmstate is None: self._update_by_slurmjob()
+        self._update_by_slurmjob()
         return self._slurmstate
 
     def statuscolor(self, s: TaskStatus = None) -> str:
@@ -353,21 +401,15 @@ class Task:
 
     def statustext_long(self, s: TaskStatus = None) -> str:
         if s is None: s = self._status
+        if s == TaskStatus.WAITING:
+            pending = [d._queue_id for d in self.task_dependencies if not d.is_in_terminal_state]
+            return 'waiting' + (f" for {pending}" if len(pending) > 1 else "")
+        if s == TaskStatus.DEPFAILED:
+            failed = [d._queue_id for d in self.task_dependencies if d.is_in_failed_terminal_state]
+            return 'dep. failed' + (f" at {failed}" if len(failed) > 1 else "")
         if s in _status_texts:
             return _status_texts[s]
-
-        status_messages = {
-            TaskStatus.WAITING: lambda: 'waiting' + (
-                f" for {[d._queue_id for d in self.task_dependencies if not d.is_in_terminal_state]}" if len(
-                    [d for d in self.task_dependencies if not d.is_in_terminal_state]) > 1 else ""),
-            TaskStatus.DEPFAILED: lambda: 'dep. failed' + (
-                f" at {[d._queue_id for d in self.task_dependencies if d.is_in_failed_terminal_state]}" if len(
-                    [d for d in self.task_dependencies if d.is_in_failed_terminal_state]) > 1 else "")
-        }
-        try:
-            return status_messages[s]()
-        except KeyError:
-            raise UnknownStatusException(f"Status {s} is unknown.")
+        raise UnknownStatusException(f"Status {s} is unknown.")
 
     @property
     def status(self):
@@ -375,7 +417,7 @@ class Task:
             s = self._status
             slurmstate = ""
         else:
-            if self._slurmstate is None: self._update_by_slurmjob()
+            self._update_by_slurmjob()
             slurmstate = self._slurmstate
             s = self._set_status_by_slurmstate(slurmstate)
         return s, self.statustext(s), self.statuscolor(s), slurmstate
@@ -428,42 +470,9 @@ class Task:
         return f"{self._slurmid}"
 
     def __eq__(self, other):
-        if isinstance(other, self.__class__):
-            if self.func != other.func:
-                return False
-
-            for k,v1 in self.cleaned_args.items():
-                if k not in other.cleaned_args:
-                    return False
-                if v1 is None and other.cleaned_args[k] is not None:
-                    return False
-                if v1 is not None and other.cleaned_args[k] is None:
-                    return False
-                if v1 is None and other.cleaned_args[k] is None:
-                    continue # None and None should be considered equal!
-                if v1 != other.cleaned_args[k]:
-                    return False
-                # => v1 = other.cleaned_args[k] or both are None
-
-            # And the other way around....
-            for k,v1 in other.cleaned_args.items():
-                if k not in self.cleaned_args:
-                    return False
-                if v1 is None and self.cleaned_args[k] is not None:
-                    return False
-                if v1 is not None and self.cleaned_args[k] is None:
-                    return False
-                if v1 is None and self.cleaned_args[k] is None:
-                    continue # None and None should be considered equal!
-                if v1 != self.cleaned_args[k]:
-                    return False
-                # => v1 = self.cleaned_args[k] or both are None
-
-            return True
-
-
-        else:
+        if not isinstance(other, self.__class__):
             return False
+        return self.func == other.func and self.cleaned_args == other.cleaned_args
 
     def get_stderr(self):
         if self.slurmjob is None:
@@ -483,4 +492,4 @@ class Task:
     
 
 
-__all__ = [Task, Product, Dependency, _get_not_updated_products]
+__all__ = ["Task", "Product", "Dependency", "IgnoredForEq", "_get_not_updated_products"]

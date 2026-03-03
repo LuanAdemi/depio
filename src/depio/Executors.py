@@ -1,11 +1,11 @@
-import concurrent.futures
 from abc import ABC, abstractmethod
-from concurrent.futures.thread import ThreadPoolExecutor
-from typing import List
+from concurrent.futures import Executor, ThreadPoolExecutor
+from typing import List, Optional
 import submitit
 from pathlib import Path
 
 from .Task import Task
+from .config import get_config
 
 
 class AbstractTaskExecutor(ABC):
@@ -22,7 +22,7 @@ class AbstractTaskExecutor(ABC):
         self.max_jobs_queued = max_jobs_queued
 
     @abstractmethod
-    def submit(self, task, task_dependencies: List[Task] = None):
+    def submit(self, task, task_dependencies: Optional[List[Task]] = None):
         ...
 
     @abstractmethod
@@ -56,7 +56,7 @@ class SequentialExecutor(AbstractTaskExecutor):
         super().__init__(max_jobs_pending=max_jobs_pending, max_jobs_queued=max_jobs_queued)
         print("depio-SequentialExecutor initialized")
 
-    def submit(self, task, task_dependencies: List[Task] = None):
+    def submit(self, task, task_dependencies: Optional[List[Task]] = None) -> None:
         print("==========================================================")
         print(f"I'm going to run task <{task.name}> now")
         print("==========================================================")
@@ -74,18 +74,17 @@ class SequentialExecutor(AbstractTaskExecutor):
 
 class ParallelExecutor(AbstractTaskExecutor):
 
-    def __init__(self, internal_executor: concurrent.futures.Executor = None, max_jobs_pending: int = None, max_jobs_queued: int = None, **kwargs):
+    def __init__(self, internal_executor: Optional[Executor] = None, max_jobs_pending: int = None, max_jobs_queued: int = None, **kwargs):
         super().__init__(max_jobs_pending=max_jobs_pending, max_jobs_queued=max_jobs_queued)
         self.internal_executor = internal_executor if internal_executor is not None else ThreadPoolExecutor()
         self.running_jobs = []
         self.running_tasks = []
         print("depio-ParallelExecutor initialized")
 
-    def submit(self, task, task_dependencies: List[Task] = None):
+    def submit(self, task, task_dependencies: Optional[List[Task]] = None) -> None:
         job = self.internal_executor.submit(task.run)
         self.running_jobs.append(job)
         self.running_tasks.append(task)
-        return
 
     def wait_for_all(self):
         for job in self.running_jobs:
@@ -98,52 +97,51 @@ class ParallelExecutor(AbstractTaskExecutor):
         return False
 
 
-TWO_DAYS_IN_MINUTES = 60 * 48  # 48 hours in minutes
-DEFAULT_PARAMS = {
-    "slurm_time": TWO_DAYS_IN_MINUTES,
-    "slurm_partition": "gpu",
-    "slurm_mem": 32,
-    "gpus_per_node": 0
-}
-
-
 class SubmitItExecutor(AbstractTaskExecutor):
     # TODO: Query the cluster for the maximum number of jobs allowed per user and set it as max_jobs_queued
 
-    def __init__(self, folder: Path = None, internal_executor=None, parameters=None, max_jobs_pending: int = 45, max_jobs_queued: int = 20):
-        super().__init__(max_jobs_pending=max_jobs_pending, max_jobs_queued=max_jobs_queued)
+    def __init__(self, folder: Path = None, internal_executor=None, parameters=None,
+                 max_jobs_pending: int = None, max_jobs_queued: int = None):
+        cfg = get_config()["executor"]["slurm"]
+        super().__init__(
+            max_jobs_pending=max_jobs_pending if max_jobs_pending is not None else cfg["max_jobs_pending"],
+            max_jobs_queued=max_jobs_queued if max_jobs_queued is not None else cfg["max_jobs_queued"],
+        )
+
+        default_params = {
+            "slurm_time":      cfg["time_minutes"],
+            "slurm_partition": cfg["partition"],
+            "slurm_mem":       cfg["mem_gb"],
+            "gpus_per_node":   cfg["gpus_per_node"],
+        }
 
         # Overwrite with a default executor.
         if internal_executor is None:
             internal_executor = submitit.AutoExecutor(folder=folder)
-            internal_executor.update_parameters(**parameters)
+            internal_executor.update_parameters(**(parameters if parameters is not None else default_params))
 
         self.internal_executor = internal_executor
-        self.default_parameters = parameters if parameters is not None else DEFAULT_PARAMS
+        self.default_parameters = parameters if parameters is not None else default_params
         self.internal_executor.update_parameters(**self.default_parameters)
 
         self.slurmjobs = []
         print("depio-SubmitItExecutor initialized")
 
-    def submit(self, task, task_dependencies: List[Task] = None):
+    def submit(self, task, task_dependencies: Optional[List[Task]] = None) -> None:
         slurm_additional_parameters = {}
 
         tasks_with_slurmjob = [t for t in task_dependencies if t.slurmjob is not None]
         afterok: List[str] = [f"{t.slurmjob.job_id}" for t in tasks_with_slurmjob]
 
-        if len(afterok) > 0:
+        if afterok:
             slurm_additional_parameters["dependency"] = f"afterok:{':'.join(afterok)}"
 
-        if task.slurm_parameters is not None:
-            params = task.slurm_parameters
-        else:
-            params = self.default_parameters
+        params = task.slurm_parameters if task.slurm_parameters else self.default_parameters
         self.internal_executor.update_parameters(**params, slurm_additional_parameters=slurm_additional_parameters)
 
         slurmjob = self.internal_executor.submit(task.run)
         task.slurmjob = slurmjob
         self.slurmjobs.append(slurmjob)
-        return
 
     def wait_for_all(self):
         for job in self.slurmjobs:
@@ -157,4 +155,4 @@ class SubmitItExecutor(AbstractTaskExecutor):
         return True
 
 
-__all__ = [AbstractTaskExecutor, ParallelExecutor, SequentialExecutor, SubmitItExecutor]
+__all__ = ["AbstractTaskExecutor", "ParallelExecutor", "SequentialExecutor", "SubmitItExecutor"]

@@ -114,9 +114,6 @@ def build_report(
 
 
 # ── Register tasks and wire up the DAG ───────────────────────────────────────
-# depio resolves file paths to producing tasks automatically in _solve_order(),
-# so the order of add_task() calls only needs to respect task-object dependencies.
-
 pipeline.add_task(generate_input(BLD / "input.txt"))
 
 pipeline.add_task(process_words(BLD / "input.txt", BLD / "words.txt"))
@@ -126,6 +123,4 @@ pipeline.add_task(split_halves(BLD / "input.txt",  [BLD / "first_half.txt", BLD 
 pipeline.add_task(build_report(BLD / "words.txt", BLD / "stats.txt", BLD / "report.txt"))
 
 # ── Run ───────────────────────────────────────────────────────────────────────
-# pipeline.run() starts the execution loop and calls exit(0) on success or
-# exit(1) if any task fails. It never returns normally.
 pipeline.run()
