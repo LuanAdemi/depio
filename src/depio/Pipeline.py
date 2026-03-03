@@ -1,4 +1,4 @@
-from typing import Set, Dict, List, Optional, Callable
+from typing import Set, Dict, List, Optional, Callable, TYPE_CHECKING
 from pathlib import Path
 import queue
 import re
@@ -7,6 +7,9 @@ import sys
 
 from rich.console import Console
 from rich.live import Live
+
+if TYPE_CHECKING:
+    import graphviz
 
 from .hooks import TaskResult, PipelineResult, make_save_hook as _make_save_hook
 from .config import get_config as _get_config
