@@ -1,9 +1,10 @@
+from typing import Optional
 from .BuildMode import BuildMode
 from .Pipeline import Pipeline
 from .Task import Task
 
 
-def task(name: str | None, pipeline: Pipeline | None = None, buildmode: BuildMode = BuildMode.IF_MISSING,
+def task(name: Optional[str], pipeline: Optional[Pipeline] = None, buildmode: BuildMode = BuildMode.IF_MISSING,
          max_age: float = None, track_code: bool = False):
     def wrapper(func):
         def decorator(*func_args, **func_kwargs):
