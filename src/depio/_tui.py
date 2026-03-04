@@ -155,8 +155,12 @@ def render_task_list(p: "Pipeline") -> Panel:
         footer.append(" pause/resume  ", style="dim")
     footer.append("Q", style="bold cyan")
     footer.append(" quit", style="dim")
-    if p.last_command_message:
-        footer.append(f"\n{p.last_command_message}", style="italic dim cyan")
+    
+    if p.last_command_message and not p._quit_confirmation_pending:
+        from rich.text import Text as RichText
+        msg = RichText.from_markup(p.last_command_message) if '[' in p.last_command_message else RichText(p.last_command_message, style="italic dim cyan")
+        footer.append("\n")
+        footer.append(msg)
 
     done_tag = ""
     if p._pipeline_done:
@@ -169,6 +173,12 @@ def render_task_list(p: "Pipeline") -> Panel:
     if below:
         group_parts.append(Text(f"  ▼ {below} more", style="dim"))
     group_parts.extend([Rule(style="bright_black"), footer])
+
+    if p.last_command_message and p._quit_confirmation_pending:
+        from rich.text import Text as RichText
+        msg = RichText.from_markup(p.last_command_message)
+        msg_panel = Panel(msg, border_style="bold red", padding=(0, 2))
+        group_parts.append(msg_panel)
 
     return Panel(
         Group(*group_parts),

@@ -93,7 +93,7 @@ def check_for_keypress(p: "Pipeline") -> bool:
             else:
                 if not p._quit_confirmation_pending:
                     p._quit_confirmation_pending = True
-                    p.last_command_message = "⚠ Pipeline still running. Press 'y' to confirm quit or 'n' to cancel"
+                    p.last_command_message = "[bold red]Pipeline still running.[/bold red] Press [bold yellow]Y[/bold yellow] to confirm quit or [bold yellow]N[/bold yellow] to cancel"
                     p.key_sequence = []
                 else:
                     p.last_command_message = "✓ Shutting down..."
