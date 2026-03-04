@@ -124,7 +124,6 @@ class SubmitItExecutor(AbstractTaskExecutor):
         self.internal_executor.update_parameters(**self.default_parameters)
 
         self.slurmjobs = []
-        print("depio-SubmitItExecutor initialized")
 
     def submit(self, task, task_dependencies: Optional[List[Task]] = None) -> None:
         slurm_additional_parameters = {}

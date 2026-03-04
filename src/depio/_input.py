@@ -65,12 +65,23 @@ def check_for_keypress(p: "Pipeline") -> bool:
             if not p._pipeline_done:
                 p.paused = True
                 p.last_command_message = "✓ Pipeline paused (press 'r' to resume)"
+            p._quit_confirmation_pending = False
             p.key_sequence = []
 
         elif key.lower() == 'r':
             if not p._pipeline_done:
                 p.paused = False
                 p.last_command_message = "✓ Pipeline resumed"
+            p._quit_confirmation_pending = False
+            p.key_sequence = []
+
+        elif p._quit_confirmation_pending and key.lower() == 'y':
+            p.last_command_message = "✓ Shutting down..."
+            p.exit_with_failed_tasks()
+
+        elif p._quit_confirmation_pending and key.lower() == 'n':
+            p._quit_confirmation_pending = False
+            p.last_command_message = "✓ Quit cancelled"
             p.key_sequence = []
 
         elif key.lower() == 'q':
@@ -80,8 +91,13 @@ def check_for_keypress(p: "Pipeline") -> bool:
                 else:
                     p.exit_successful()
             else:
-                p.last_command_message = "✓ Shutting down..."
-                p.exit_with_failed_tasks()
+                if not p._quit_confirmation_pending:
+                    p._quit_confirmation_pending = True
+                    p.last_command_message = "⚠ Pipeline still running. Press 'y' to confirm quit or 'n' to cancel"
+                    p.key_sequence = []
+                else:
+                    p.last_command_message = "✓ Shutting down..."
+                    p.exit_with_failed_tasks()
 
         elif key == 'up':
             n = len(p.tasks)
