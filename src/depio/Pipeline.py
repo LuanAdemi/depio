@@ -73,6 +73,9 @@ class Pipeline:
         self._hook_fired_tasks: set = set()
         self._quit_confirmation_pending: bool = False
         self._animation_frame: int = 0
+        self._filter_mode: bool = False
+        self._filter_string: str = ""
+        self._view_mode_idx: int = 0  # 0=All, 1=Pending, 2=Running, 3=Failed, 4=Finished
 
     # ── Task registration ──────────────────────────────────────────────────────
 

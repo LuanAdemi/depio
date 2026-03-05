@@ -32,8 +32,12 @@ def read_key() -> str:
             b2 = os.read(fd, 1)
             if b2 == b'[' and select.select([fd], [], [], 0.05)[0]:
                 b3 = os.read(fd, 1)
+                if b3 == b'Z':
+                    return 'shift+tab'
                 return {b'A': 'up', b'B': 'down'}.get(b3, 'esc')
         return 'esc'
+    if b == b'\t':
+        return 'tab'
     if b in (b'\n', b'\r'):
         return 'enter'
     return b.decode('utf-8', errors='replace')
@@ -61,6 +65,24 @@ def check_for_keypress(p: "Pipeline") -> bool:
         p.last_key_press_time = current_time
         p.key_sequence.append(key)
 
+        # Handle filter mode input
+        if p._filter_mode:
+            if key == 'enter':
+                p._filter_mode = False
+                p.last_command_message = f"✓ Filter: '{p._filter_string}'" if p._filter_string else "✓ Filter cleared"
+                p.key_sequence = []
+                p._scroll_offset = 0
+                p._selected_task_idx = None
+            elif key == 'esc':
+                p._filter_mode = False
+                p.last_command_message = "✓ Filter cancelled"
+                p.key_sequence = []
+            elif key in ('backspace', '\x08', '\x7f'):  # Handle backspace
+                p._filter_string = p._filter_string[:-1]
+            elif len(key) == 1 and key.isprintable():
+                p._filter_string += key
+            return True
+
         if key.lower() == 'p':
             if not p._pipeline_done:
                 p.paused = True
@@ -73,6 +95,28 @@ def check_for_keypress(p: "Pipeline") -> bool:
                 p.paused = False
                 p.last_command_message = "✓ Pipeline resumed"
             p._quit_confirmation_pending = False
+            p.key_sequence = []
+
+        elif key.lower() == 'f':
+            p._filter_mode = True
+            p._filter_string = ""
+            p.last_command_message = "Filter mode: type to search, Enter to apply, Esc to cancel"
+            p.key_sequence = []
+
+        elif key == 'tab':
+            p._view_mode_idx = (p._view_mode_idx + 1) % 5
+            modes = ["All tasks", "Pending", "Running", "Failed", "Finished"]
+            p.last_command_message = f"✓ View: {modes[p._view_mode_idx]}"
+            p._scroll_offset = 0
+            p._selected_task_idx = None
+            p.key_sequence = []
+
+        elif key == 'shift+tab':
+            p._view_mode_idx = (p._view_mode_idx - 1) % 5
+            modes = ["All tasks", "Pending", "Running", "Failed", "Finished"]
+            p.last_command_message = f"✓ View: {modes[p._view_mode_idx]}"
+            p._scroll_offset = 0
+            p._selected_task_idx = None
             p.key_sequence = []
 
         elif p._quit_confirmation_pending and key.lower() == 'y':

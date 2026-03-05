@@ -39,10 +39,38 @@ def render_task_list(p: "Pipeline") -> Panel:
     has_slurm = any(task.slurmjob is not None for task in p.tasks)
 
     # Build the display list: tasks that pass the visibility filter.
-    display_list = [
-        (i, task) for i, task in enumerate(p.tasks)
-        if not (p.HIDE_SUCCESSFUL_TERMINATED_TASKS and task.is_in_successful_terminal_state)
-    ]
+    display_list = []
+    for i, task in enumerate(p.tasks):
+        # Apply view mode filter
+        if p._view_mode_idx == 1:  # Pending
+            from .TaskStatus import TaskStatus
+            if task.status[0] not in [TaskStatus.PENDING, TaskStatus.WAITING]:
+                continue
+        elif p._view_mode_idx == 2:  # Running
+            from .TaskStatus import TaskStatus
+            if task.status[0] != TaskStatus.RUNNING:
+                continue
+        elif p._view_mode_idx == 3:  # Failed
+            from .TaskStatus import TaskStatus
+            if not task.is_in_failed_terminal_state:
+                continue
+        elif p._view_mode_idx == 4:  # Finished
+            if not task.is_in_successful_terminal_state:
+                continue
+        # View mode 0 (All) shows everything
+        
+        # Skip if not matching filter
+        if p._filter_string:
+            filter_lower = p._filter_string.lower()
+            name_match = filter_lower in task.name.lower()
+            desc_match = task.description and filter_lower in task.description.lower()
+            if not (name_match or desc_match):
+                continue
+        # Skip if already hidden by HIDE_SUCCESSFUL_TERMINATED_TASKS
+        if p.HIDE_SUCCESSFUL_TERMINATED_TASKS and task.is_in_successful_terminal_state:
+            continue
+        display_list.append((i, task))
+    
     total_display = len(display_list)
 
     # Determine how many rows fit in the terminal.
@@ -50,9 +78,15 @@ def render_task_list(p: "Pipeline") -> Panel:
         term_height = shutil.get_terminal_size().lines
     except Exception:
         term_height = 24
-    # Overhead: panel borders (2), table header+separator (2), Rule (1),
-    #           footer (2), scroll hints (2) = 9
-    max_rows = max(3, term_height - 9)
+    
+    # Calculate overhead: panel borders (2), table header+separator (2), Rule (1),
+    # footer (2), scroll hints (2), filter input if active (2), status message (1) = 9-12
+    overhead = 9
+    if p._filter_mode:
+        overhead += 2  # filter input line
+    if p.last_command_message and not p._quit_confirmation_pending:
+        overhead += 1  # status message line
+    max_rows = max(3, term_height - overhead)
 
     # Find where the selected task sits in the display list.
     selected_display_idx = None
@@ -152,6 +186,10 @@ def render_task_list(p: "Pipeline") -> Panel:
     footer.append(" detail  ", style="dim")
     footer.append("Esc", style="bold cyan")
     footer.append(" back  ", style="dim")
+    footer.append("F", style="bold cyan")
+    footer.append(" filter  ", style="dim")
+    footer.append("Tab", style="bold cyan")
+    footer.append(" cycle view  ", style="dim")
     if not p._pipeline_done:
         footer.append("P", style="bold cyan")
         footer.append("/", style="dim")
@@ -160,11 +198,20 @@ def render_task_list(p: "Pipeline") -> Panel:
     footer.append("Q", style="bold cyan")
     footer.append(" quit", style="dim")
     
+    # Show view mode on the same line
+    view_modes = ["All tasks", "Pending", "Running", "Failed", "Finished"]
+    view_text = view_modes[p._view_mode_idx]
+    view_style = "bold cyan" if p._view_mode_idx != 0 else "dim"
+    footer.append("  |  ")
+    footer.append(view_text, style=view_style)
+    
     if p.last_command_message and not p._quit_confirmation_pending:
         from rich.text import Text as RichText
         msg = RichText.from_markup(p.last_command_message) if '[' in p.last_command_message else RichText(p.last_command_message, style="italic dim cyan")
         footer.append("\n")
         footer.append(msg)
+    elif p._filter_string:
+        pass  # Filter already shown above
 
     done_tag = ""
     if p._pipeline_done:
@@ -176,6 +223,14 @@ def render_task_list(p: "Pipeline") -> Panel:
     group_parts.append(table)
     if below:
         group_parts.append(Text(f"  ▼ {below} more", style="dim"))
+    
+    # Show filter input if in filter mode
+    if p._filter_mode:
+        from rich.text import Text as RichText
+        filter_input = RichText(f"Filter: {p._filter_string}_", style="bold yellow")
+        group_parts.append(Rule(style="bright_black"))
+        group_parts.append(filter_input)
+    
     group_parts.extend([Rule(style="bright_black"), footer])
 
     if p.last_command_message and p._quit_confirmation_pending:
