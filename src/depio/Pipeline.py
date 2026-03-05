@@ -72,6 +72,7 @@ class Pipeline:
         self._pipeline_failed: bool = False
         self._hook_fired_tasks: set = set()
         self._quit_confirmation_pending: bool = False
+        self._animation_frame: int = 0
 
     # ── Task registration ──────────────────────────────────────────────────────
 

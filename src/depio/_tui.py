@@ -137,7 +137,11 @@ def render_task_list(p: "Pipeline") -> Panel:
     elif p.paused:
         footer.append("⏸ PAUSED", style="bold yellow")
     else:
-        footer.append("▶ RUNNING", style="bold green")
+        # Pulsating animation: cycle through 4 brightness levels
+        frames = ["●", "◐", "○", "◑"]
+        frame = frames[(p._animation_frame // 2) % len(frames)]
+        p._animation_frame += 1
+        footer.append(frame + " RUNNING", style="bold green")
     footer.append("  ")
     for label, count in status_counts.items():
         footer.append(f"{count} {label}  ", style="dim")
