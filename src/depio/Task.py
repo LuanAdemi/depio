@@ -6,10 +6,11 @@ import typing
 import time
 from io import StringIO
 from os.path import getmtime
-from typing import List, Dict, Callable, get_origin, Annotated, get_args, Union
+from typing import List, Dict, Callable, get_origin, Annotated, get_args, Union, Optional
 import sys
 
 from .BuildMode import BuildMode
+from .config import get_config
 from .TaskStatus import TaskStatus, TERMINAL_STATES, SUCCESSFUL_TERMINAL_STATES, FAILED_TERMINAL_STATES
 from .stdio_helpers import redirect, stop_redirect
 from .code_hash import has_code_changed, record_hash
@@ -155,13 +156,15 @@ class Task:
 
         self._status: TaskStatus = TaskStatus.WAITING
         self.name: str = name
-        self._queue_id: int | None = None
+        self._queue_id: Optional[int] = None
         self.slurmjob = None
         self.func: Callable = func
         self.func_args: List = func_args or []
         self.func_kwargs: Dict = func_kwargs or {}
         self.buildmode: BuildMode = buildmode
         self.max_age: float = max_age  # seconds; used by IF_OLD mode
+        if self.max_age is None and buildmode == BuildMode.IF_OLD:
+            self.max_age = get_config()["task"]["max_age_seconds"]
         self.track_code: bool = track_code
         self._code_hash_key: str = f"{func.__module__}.{func.__qualname__}"
         self._decided_to_run: bool = False  # set True the first time should_run() → True
@@ -216,9 +219,19 @@ class Task:
 
 
     def all_path_dependencies_exist(self) -> bool:
+        if self.path_dependencies is None:
+            raise RuntimeError(
+                f"Task '{self.name}': path_dependencies not initialised. "
+                "Call Pipeline._solve_order() before executing tasks."
+            )
         return all(p_dep.exists() for p_dep in self.path_dependencies)
 
     def all_task_dependencies_terminated_successfully(self) -> bool:
+        if self.task_dependencies is None:
+            raise RuntimeError(
+                f"Task '{self.name}': task_dependencies not initialised. "
+                "Call Pipeline._solve_order() before executing tasks."
+            )
         return all(t_dep.is_in_successful_terminal_state for t_dep in self.task_dependencies)
 
     def add_dependent_task(self, task):
@@ -251,8 +264,7 @@ class Task:
             if missing_products:
                 result = True
             else:
-                from .config import get_config
-                max_age = self.max_age if self.max_age is not None else get_config()["task"]["max_age_seconds"]
+                max_age = self.max_age
                 now = time.time()
                 result = any(now - p.stat().st_mtime > max_age for p in self.products)
         elif self.buildmode == BuildMode.IF_CODE_CHANGED:
@@ -318,7 +330,7 @@ class Task:
             self.func(*self.func_args, **self.func_kwargs)
         except Exception as e:
             self.set_to_failed()
-            raise TaskRaisedException(e)
+            raise TaskRaisedException(e) from e
         finally:
             stop_redirect()
 
@@ -487,8 +499,13 @@ class Task:
             return self.slurmjob.stdout()
         
     def __hash__(self):
-        # Hash based on function and cleaned_args
-        return hash((id(self.func), tuple(sorted(self.cleaned_args.items()))))
+        # Hash based on function and cleaned_args.
+        # List values are converted to tuples so they are hashable.
+        def _hashable(v):
+            return tuple(v) if isinstance(v, list) else v
+        return hash((id(self.func), tuple(sorted(
+            (k, _hashable(v)) for k, v in self.cleaned_args.items()
+        ))))
     
 
 

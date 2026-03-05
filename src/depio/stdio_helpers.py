@@ -26,6 +26,7 @@ orig___stderr__ = sys.__stderr__
 orig_stdout = sys.stdout
 orig_stderr = sys.stderr
 thread_proxies = {}
+_thread_proxies_lock = threading.Lock()
 
 
 class LocalProxy:
@@ -173,27 +174,20 @@ def redirect(stringio: StringIO) -> None:
     """
     Redirects the current thread's stdout/stderr to the given StringIO buffer.
     """
-    # Get the current thread's identity.
     ident = threading.current_thread().ident
-
-    # Enable the redirect and return the cStringIO object.
-    thread_proxies[ident] = stringio
+    with _thread_proxies_lock:
+        thread_proxies[ident] = stringio
 
 
 def stop_redirect() -> None:
     """
     Stops redirecting the current thread's stdout/stderr.
     """
-    # Get the current thread's identity.
     ident = threading.current_thread().ident
-
-    # Only act on proxied threads.
-    if ident not in thread_proxies:
-        return
-
-    # Read the value, close/remove the buffer, and return the value.
-    thread_proxies[ident] = None
-    del thread_proxies[ident]
+    with _thread_proxies_lock:
+        if ident not in thread_proxies:
+            return
+        del thread_proxies[ident]
 
 
 def _get_stream(original):

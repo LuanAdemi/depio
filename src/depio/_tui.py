@@ -74,6 +74,8 @@ def render_task_list(p: "Pipeline") -> Panel:
     above   = p._scroll_offset
     below   = total_display - (p._scroll_offset + len(visible))
 
+    has_variants = any(task.description for task in p.tasks)
+
     table = Table(
         box=box.SIMPLE_HEAD,
         show_edge=False,
@@ -82,7 +84,9 @@ def render_task_list(p: "Pipeline") -> Panel:
         header_style="bold",
     )
     table.add_column("#",    width=4,  style="dim")
-    table.add_column("Name", ratio=1)
+    table.add_column("Name", ratio=2 if has_variants else 1)
+    if has_variants:
+        table.add_column("Description", ratio=1, style="dim")
     if has_slurm:
         table.add_column("Slurm ID",     width=10)
         table.add_column("Cluster State", width=14)
@@ -108,16 +112,18 @@ def render_task_list(p: "Pipeline") -> Panel:
         deps_str = ",".join(str(t._queue_id) for t in (task.task_dependencies or [])) or "–"
         row_style = "bold reverse" if i == p._selected_task_idx else None
 
+        variant_cells = [task.description or ""] if has_variants else []
+
         if has_slurm:
             table.add_row(
-                str(task.id), task.name,
+                str(task.id), task.name, *variant_cells,
                 str(task.slurmid or "–"), str(slurm_state or "–"),
                 badge, duration, deps_str,
                 style=row_style,
             )
         else:
             table.add_row(
-                str(task.id), task.name,
+                str(task.id), task.name, *variant_cells,
                 badge, duration, deps_str,
                 style=row_style,
             )
@@ -149,8 +155,12 @@ def render_task_list(p: "Pipeline") -> Panel:
         footer.append(" pause/resume  ", style="dim")
     footer.append("Q", style="bold cyan")
     footer.append(" quit", style="dim")
-    if p.last_command_message:
-        footer.append(f"\n{p.last_command_message}", style="italic dim cyan")
+    
+    if p.last_command_message and not p._quit_confirmation_pending:
+        from rich.text import Text as RichText
+        msg = RichText.from_markup(p.last_command_message) if '[' in p.last_command_message else RichText(p.last_command_message, style="italic dim cyan")
+        footer.append("\n")
+        footer.append(msg)
 
     done_tag = ""
     if p._pipeline_done:
@@ -163,6 +173,12 @@ def render_task_list(p: "Pipeline") -> Panel:
     if below:
         group_parts.append(Text(f"  ▼ {below} more", style="dim"))
     group_parts.extend([Rule(style="bright_black"), footer])
+
+    if p.last_command_message and p._quit_confirmation_pending:
+        from rich.text import Text as RichText
+        msg = RichText.from_markup(p.last_command_message)
+        msg_panel = Panel(msg, border_style="bold red", padding=(0, 2))
+        group_parts.append(msg_panel)
 
     return Panel(
         Group(*group_parts),
@@ -202,7 +218,10 @@ def render_task_detail(p: "Pipeline") -> Panel:
     if stderr_content:
         parts.append(Panel(Text(stderr_content), title="stderr", border_style="red dim", padding=(0, 1)))
 
+    n = len(p.tasks)
+    pos = (p._selected_task_idx or 0) + 1
     footer = Text.assemble(
+        ("↑↓", "bold cyan"), (f"  prev/next task ({pos}/{n})  ", "dim"),
         ("Esc", "bold cyan"), ("  back to overview", "dim"),
     )
     parts.extend([Rule(style="bright_black"), footer])

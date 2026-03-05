@@ -1,27 +1,29 @@
 """
-demo_hydra.py — Hydra configuration integration with IgnoredForEq
-==================================================================
-Demonstrates:
-  - Using Hydra to inject configuration (DictConfig) into task functions
-  - Annotating the config argument as IgnoredForEq so that two tasks called
-    with different configs but the same paths are still considered equal
-    (enabling deduplication and caching across config sweeps)
-  - A multi-stage pipeline where each stage reads the previous stage's output
-  - ParallelExecutor for running independent branches concurrently
+demo_hydra.py — Hydra + depio integration
+==========================================
+Demonstrates run_hydra_multirun(), which runs a depio pipeline across
+multiple Hydra config variants inside a single Pipeline execution.
+
+Each task is tagged with its config variant ("attack=zhang", etc.) and
+the label appears in the TUI's Variant column.
+
+Shared tasks (same output path across variants, annotated with IgnoredForEq)
+are deduplicated automatically — they appear once with no Variant label.
 
 Usage:
-  poetry run python demo_hydra.py              # uses config/config.yaml defaults
-  poetry run python demo_hydra.py attack=zhang # override the attack sub-config
+    poetry run python demo_hydra.py
 
-DAG (files in build/<bld_path>/)
-----------------------------------
-  [generate_input] ──► input.txt
-                           │
-                     [process_data]  ──► output_<attack.name>.txt
-                           │
-                     [evaluate]      ──► eval_<attack.name>.txt
-                           │
-                     [final_report]  ──► final_<attack.name>.txt
+DAG (files in build/<attack.name>/)
+-------------------------------------
+                    [generate_input]  ──► input.txt       ← shared across variants
+                          │
+             ┌────────────┼────────────┐
+             ▼            ▼            ▼
+     [process_data]  [process_data]  [process_data]       ← one per attack
+             │            │            │
+         [evaluate]  [evaluate]    [evaluate]
+             │            │            │
+      [final_report] [final_report] [final_report]
 """
 
 from typing import Annotated
@@ -29,76 +31,68 @@ import pathlib
 import time
 
 from omegaconf import DictConfig, OmegaConf
-import hydra
 
 from depio.Executors import ParallelExecutor
 from depio.Pipeline import Pipeline
 from depio.decorators import task
 from depio.Task import Product, Dependency, IgnoredForEq
 from depio.BuildMode import BuildMode
+from depio.integrations.hydra import run_hydra_multirun
 
-SLURM = pathlib.Path("slurm")
-SLURM.mkdir(exist_ok=True)
+BLD_ROOT = pathlib.Path("build")
+BLD_ROOT.mkdir(exist_ok=True)
 
 CONFIG = pathlib.Path("config")
-CONFIG.mkdir(exist_ok=True)
 
-depioExecutor = ParallelExecutor()
-defaultpipeline = Pipeline(depioExecutor=depioExecutor, name="Hydra Demo", clear_screen=False)
 
 # ── Task definitions ──────────────────────────────────────────────────────────
-# cfg is annotated with IgnoredForEq so that Task equality is based only on
-# the file paths, not on the config contents.  This means running the same
-# pipeline twice with a different config sweep will reuse cached outputs
-# whenever the output paths are identical.
+# cfg is annotated IgnoredForEq so that tasks whose file paths match are
+# considered equal regardless of config contents — enabling deduplication
+# of shared stages (e.g. generate_input) across variants.
 
-@task("generate_input", buildmode=BuildMode.IF_MISSING)
+@task("generate_input", buildmode=BuildMode.ALWAYS)
 def generate_input(
     output: Annotated[pathlib.Path, Product],
     cfg:    Annotated[DictConfig, IgnoredForEq],
 ):
-    """Write synthetic input data, embedding the target label from the config."""
+    """Write synthetic input data using the target label from config."""
     lines = [f"sample_{i}: label={cfg.targetlabel}" for i in range(50)]
     output.write_text("\n".join(lines))
     print(f"  [generate_input] {len(lines)} samples → {output.name}")
 
 
-@task("process_data", buildmode=BuildMode.IF_MISSING)
+@task("process_data", buildmode=BuildMode.ALWAYS)
 def process_data(
     src:    Annotated[pathlib.Path, Dependency],
     dst:    Annotated[pathlib.Path, Product],
     cfg:    Annotated[DictConfig, IgnoredForEq],
     delay:  int = 1,
 ):
-    """Apply an attack-specific transformation to the input data."""
+    """Apply attack-specific processing."""
     time.sleep(delay)
-    text = src.read_text()
     attack_name = cfg.attack.name
     dst.write_text(
         f"# Processed with attack: {attack_name}\n"
         f"# Config:\n{OmegaConf.to_yaml(cfg.attack)}\n"
-        f"# Data:\n{text}\n"
+        f"# Data:\n{src.read_text()}\n"
     )
     print(f"  [process_data]  attack={attack_name} → {dst.name}")
 
 
-@task("evaluate", buildmode=BuildMode.IF_MISSING)
+@task("evaluate", buildmode=BuildMode.ALWAYS)
 def evaluate(
     processed:  Annotated[pathlib.Path, Dependency],
     result:     Annotated[pathlib.Path, Product],
     cfg:        Annotated[DictConfig, IgnoredForEq],
 ):
-    """Simulate evaluation of the processed data against the target label."""
+    """Score processed data against the target label."""
     time.sleep(0.5)
     lines = processed.read_text().splitlines()
-    n_samples = sum(1 for l in lines if l.startswith("# Data:") or l.startswith("sample_"))
-    score = n_samples * 0.01 * cfg.alpha   # dummy score
+    n_samples = sum(1 for ln in lines if ln.startswith("sample_"))
+    score = n_samples * 0.01 * cfg.alpha
     result.write_text(
         f"attack: {cfg.attack.name}\n"
-        f"target_label: {cfg.targetlabel}\n"
-        f"alpha: {cfg.alpha}\n"
-        f"score: {score:.4f}\n"
-        f"n_samples: {n_samples}\n"
+        f"score:  {score:.4f}\n"
     )
     print(f"  [evaluate]      score={score:.4f} → {result.name}")
 
@@ -109,47 +103,43 @@ def final_report(
     report:         Annotated[pathlib.Path, Product],
     cfg:            Annotated[DictConfig, IgnoredForEq],
 ):
-    """Produce a human-readable final report from the evaluation results."""
-    content = eval_result.read_text()
+    """Produce final report from evaluation."""
     report.write_text(
         f"=== Final Report ===\n"
         f"Pipeline: {cfg.bld_path}\n\n"
-        f"{content}\n"
+        f"{eval_result.read_text()}\n"
     )
-    print(f"  [final_report]  report → {report.name}")
+    print(f"  [final_report]  → {report.name}")
 
 
-# ── Hydra entry point ─────────────────────────────────────────────────────────
+# ── Pipeline builder (called once per config variant) ─────────────────────────
 
-@hydra.main(version_base=None, config_path=str(CONFIG), config_name="config")
-def main(cfg: DictConfig) -> None:
-    BLD = pathlib.Path(cfg.bld_path)
+def build_pipeline(cfg: DictConfig, pipeline: Pipeline) -> None:
+    attack = cfg.attack.name
+    BLD = pathlib.Path(cfg.bld_path) / attack
     BLD.mkdir(parents=True, exist_ok=True)
 
-    attack = cfg.attack.name
+    # generate_input uses the root build dir and is shared across variants
+    # (same output path → deduplicated by depio when IgnoredForEq is used).
+    shared_input = BLD_ROOT / "input.txt"
 
-    # Stage 0: generate input (shared across attacks with the same target label)
-    defaultpipeline.add_task(generate_input(BLD / "input.txt", cfg))
-
-    # Stages 1–3: attack-specific chain
-    defaultpipeline.add_task(process_data(
-        BLD / "input.txt",
-        BLD / f"output_{attack}.txt",
-        cfg,
-        delay=1,
-    ))
-    defaultpipeline.add_task(evaluate(
-        BLD / f"output_{attack}.txt",
-        BLD / f"eval_{attack}.txt",
-        cfg,
-    ))
-    defaultpipeline.add_task(final_report(
-        BLD / f"eval_{attack}.txt",
-        BLD / f"final_{attack}.txt",
-        cfg,
-    ))
+    pipeline.add_task(generate_input(shared_input, cfg))
+    pipeline.add_task(process_data(shared_input, BLD / "output.txt", cfg, delay=1))
+    pipeline.add_task(evaluate(BLD / "output.txt", BLD / "eval.txt", cfg))
+    pipeline.add_task(final_report(BLD / "eval.txt", BLD / "report.txt", cfg))
 
 
-if __name__ == "__main__":
-    main()
-    defaultpipeline.run()
+# ── Run multirun across all attack variants ───────────────────────────────────
+
+run_hydra_multirun(
+    build_pipeline,
+    overrides_list=[
+        ["attack=zhang"],
+        ["attack=dombrowski"],
+        ["attack=ours"],
+    ],
+    executor=ParallelExecutor(),
+    config_path=str(CONFIG),
+    config_name="config",
+    pipeline_name="Hydra Multirun Demo",
+)

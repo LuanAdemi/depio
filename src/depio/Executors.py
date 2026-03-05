@@ -79,7 +79,6 @@ class ParallelExecutor(AbstractTaskExecutor):
         self.internal_executor = internal_executor if internal_executor is not None else ThreadPoolExecutor()
         self.running_jobs = []
         self.running_tasks = []
-        print("depio-ParallelExecutor initialized")
 
     def submit(self, task, task_dependencies: Optional[List[Task]] = None) -> None:
         job = self.internal_executor.submit(task.run)
@@ -125,7 +124,6 @@ class SubmitItExecutor(AbstractTaskExecutor):
         self.internal_executor.update_parameters(**self.default_parameters)
 
         self.slurmjobs = []
-        print("depio-SubmitItExecutor initialized")
 
     def submit(self, task, task_dependencies: Optional[List[Task]] = None) -> None:
         slurm_additional_parameters = {}
