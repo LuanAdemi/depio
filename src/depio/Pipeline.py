@@ -46,6 +46,7 @@ class PipelineTuiState:
     pipeline_done: bool = False
     pipeline_failed: bool = False
     quit_confirmation_pending: bool = False
+    quit_requested: bool = False
 
 
 class Pipeline:
@@ -327,6 +328,9 @@ class Pipeline:
 
                 try:
                     while True:
+                        if self.tui.quit_requested:
+                            break
+
                         self._submit_ready_tasks()
                         self._poll_slurm_statuses()
                         self._fire_task_hooks()
@@ -335,10 +339,25 @@ class Pipeline:
                         if self.tui.pipeline_done and self.EXIT_WHEN_DONE:
                             return
 
-                        time.sleep(self.REFRESHRATE)
+                        # Sleep in small slices so a quit requested from the
+                        # TUI thread is picked up promptly instead of after a
+                        # full refresh interval.
+                        deadline = time.time() + self.REFRESHRATE
+                        while time.time() < deadline and not self.tui.quit_requested:
+                            time.sleep(0.05)
                 finally:
                     tui_stop.set()
                     tui_thread.join(timeout=2.0)
+
+                # A quit was requested from the TUI thread.  Perform the actual
+                # exit here on the main thread so SystemExit terminates the
+                # process (raised off the main thread it would only kill the
+                # daemon TUI thread, leaving the pipeline running).
+                if self.tui.quit_requested:
+                    if self.tui.pipeline_done and not self.tui.pipeline_failed:
+                        self.exit_successful()
+                    else:
+                        self.exit_with_failed_tasks()
 
         except KeyboardInterrupt:
             print("\nStopping execution because of keyboard interrupt!")

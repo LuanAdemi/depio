@@ -77,7 +77,7 @@ def check_for_keypress(p: "Pipeline") -> bool:
 
         elif tui.quit_confirmation_pending and key.lower() == 'y':
             tui.last_command_message = "✓ Shutting down..."
-            p.exit_with_failed_tasks()
+            tui.quit_requested = True
 
         elif tui.quit_confirmation_pending and key.lower() == 'n':
             tui.quit_confirmation_pending = False
@@ -86,10 +86,7 @@ def check_for_keypress(p: "Pipeline") -> bool:
 
         elif key.lower() == 'q':
             if tui.pipeline_done:
-                if tui.pipeline_failed:
-                    p.exit_with_failed_tasks()
-                else:
-                    p.exit_successful()
+                tui.quit_requested = True
             else:
                 if not tui.quit_confirmation_pending:
                     tui.quit_confirmation_pending = True
@@ -101,7 +98,7 @@ def check_for_keypress(p: "Pipeline") -> bool:
                     tui.key_sequence = []
                 else:
                     tui.last_command_message = "✓ Shutting down..."
-                    p.exit_with_failed_tasks()
+                    tui.quit_requested = True
 
         elif key == 'up':
             n = len(p.tasks)
